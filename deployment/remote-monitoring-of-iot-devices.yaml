@@ -1,0 +1,857 @@
+# Copyright 2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# A copy of the License is located at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# or in the "license" file accompanying this file. This file is distributed
+# on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+# express or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: "(SO0138) - The AWS CloudFormation template for deployment of the %%SOLUTION_NAME%%. Version %%VERSION%%"
+
+Parameters:
+  SNSEmail:
+    Description: Notification receiver email
+    Type: String
+    AllowedPattern: ^[_A-Za-z0-9-\+]+(\.[_A-Za-z0-9-]+)*@[A-Za-z0-9-]+(\.[A-Za-z0-9]+)*(\.[A-Za-z]{2,})$
+    MinLength: 1
+  NumberOfDevices:
+    Description: Number of devices to simulate (min 1 and max 100)
+    Type: Number
+    MinValue : 1
+    MaxValue : 100
+    Default: 20
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: "Required Inputs"
+      Parameters:
+      - SNSEmail
+      - NumberOfDevices
+    ParameterLabels:
+      SNSEmail:
+        default: "Notification receiver email"
+      NumberOfDevices:
+        default: "Number of devices to simulate"
+
+Mappings:
+  MetricsMap:
+    Send-Data:
+      SendAnonymousData: "Yes" # change to 'No' if needed
+  SourceCode:
+    General:
+      S3Bucket: "%%BUCKET_NAME%%"
+      KeyPrefix: "%%SOLUTION_NAME%%/%%VERSION%%"
+
+Resources:
+
+  IoTRmRuleIoTEventsExecPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "IoT core policy for access to IoT events "
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "iotevents:BatchPutMessage"
+            Resource:
+              - !Sub arn:${AWS::Partition}:iotevents:${AWS::Region}:${AWS::AccountId}:input/${IoTRmSolInput}
+
+  IoTRmRuleIoTAnalyticsExecPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "IoT core policy for access to IoT analytics "
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - "iotanalytics:BatchPutMessage"
+            Resource:
+              - !Sub arn:${AWS::Partition}:iotanalytics:${AWS::Region}:${AWS::AccountId}:channel/${IoTRmSolDataChannel}            
+
+  IoTRmEventsSNSExecPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+        cfn_nag:
+            rules_to_suppress:
+                - id: W13
+                  reason: "Policy has been scoped down"
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "sns:Publish"
+            Resource:
+              - !Ref IoTRmSolSNSTopic
+          - Effect: "Allow"
+            Action:
+              - "kms:GenerateDataKey"
+              - "kms:Decrypt"
+            Resource:
+              - !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/${IoTRmKMSKey}                     
+      Roles:
+          - Ref: "IoTRmEventsSNSExecRole"
+
+  IoTRmRuleIoTEventsExecRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - iot.amazonaws.com
+            Action:
+            - sts:AssumeRole
+        ManagedPolicyArns:
+          - Ref: IoTRmRuleIoTEventsExecPolicy
+
+
+  IoTRmRuleIoTAnalyticsExecRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - iot.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+        - Ref: IoTRmRuleIoTAnalyticsExecPolicy
+
+
+  IoTRmEventsSNSExecRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - iotevents.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+
+  IoTRmSolDataChannel:
+    Type: "AWS::IoTAnalytics::Channel"
+    Properties:
+      RetentionPeriod:
+        Unlimited: false
+        NumberOfDays: 30
+
+  IoTRmSolDataDatastore:
+    Type: "AWS::IoTAnalytics::Datastore"
+    Properties:
+      RetentionPeriod:
+        Unlimited: false
+        NumberOfDays: 30
+
+  IoTRmSolDataPipeline:
+    Type: "AWS::IoTAnalytics::Pipeline"
+    Properties:
+      PipelineActivities:
+        -
+          Channel:
+            Name: "ChannelAcitvity"
+            ChannelName: !Ref IoTRmSolDataChannel
+            Next: "DataStoreActivity"
+          Datastore:
+            Name: "DataStoreActivity"
+            DatastoreName: !Ref IoTRmSolDataDatastore
+
+  IoTRmSolDataset:
+    Type: "AWS::IoTAnalytics::Dataset"
+    Properties:
+      RetentionPeriod:
+        Unlimited: false
+        NumberOfDays: 30
+      Actions:
+        -
+          ActionName: "SqlAction"
+          QueryAction:
+            SqlQuery: !Join
+              - ''
+              - - 'select * from '
+                - !Ref IoTRmSolDataDatastore
+      Triggers:
+        -
+          Schedule:
+            ScheduleExpression: "cron(0 * * * ? *)"
+    DependsOn: IoTRmSolDataDatastore
+
+  IoTRmSolGatewayRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      TopicRulePayload:
+        Description: "Routes device data for storage."
+        Sql: SELECT *, parse_time("yyyy-MM-dd'T'HH:mm:ss.SSSZ", timestamp()) as RealTime FROM 'remote_monitoring/'
+        AwsIotSqlVersion: "2016-03-23"
+        RuleDisabled: False
+        Actions:
+          - IotAnalytics:
+              ChannelName: !Ref IoTRmSolDataChannel
+              RoleArn:
+                Fn::GetAtt: [ IoTRmRuleIoTAnalyticsExecRole, "Arn" ]
+
+  IoTRmSolRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      TopicRulePayload:
+        Description: "Routes device data to IoTEvents"
+        Sql: SELECT * FROM 'remote_monitoring/'
+        AwsIotSqlVersion: "2016-03-23"
+        RuleDisabled: False
+        Actions:
+          - IotEvents:
+              InputName: !Ref IoTRmSolInput
+              RoleArn:
+                Fn::GetAtt: [ IoTRmRuleIoTEventsExecRole, "Arn" ]
+
+  IoTRmKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "CMK for SSE of SNS"
+      EnableKeyRotation: true
+      Enabled: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: 
+                Fn::Join:
+                - ''
+                - - 'arn:aws:iam::'
+                  - Ref: AWS::AccountId
+                  - :root
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              Service: 
+                - "sns.amazonaws.com"
+            Action: 
+              - "kms:GenerateDataKey"
+              - "kms:Decrypt"
+            Resource: '*'
+
+  IoTRmSolSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: !Ref IoTRmKMSKey
+      Subscription:
+        - Endpoint: !Ref SNSEmail
+          Protocol: email
+
+  IoTRmSolInput:
+    Type: AWS::IoTEvents::Input
+    Properties:
+      InputDescription: "IoTRmSolInput"
+      InputDefinition:
+        Attributes:
+          -
+            JsonPath: "deviceType"
+          -
+            JsonPath: "deviceId"
+          -
+            JsonPath: "pressure"
+          -
+            JsonPath: "temperature"
+          -
+            JsonPath: "oilLevel"
+
+  IoTRmSolDetectorModel:
+    Type: AWS::IoTEvents::DetectorModel
+    Properties:
+      DetectorModelDescription: "Detector model for Remote Monitoring"
+      EvaluationMethod: SERIAL
+      Key: "deviceId"
+      RoleArn: !GetAtt IoTRmEventsSNSExecRole.Arn
+      DetectorModelDefinition:
+        InitialStateName: "NormalState"
+        States:
+          - StateName: "NormalState"
+            OnEnter:
+              Events:
+                - EventName: "initialize"
+                  Condition: "true"
+                  Actions:
+                    - SetVariable:
+                        VariableName: "temperatureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "pressureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "oilLevelErrorCount"
+                        Value: "0"
+                    - SetTimer:
+                        TimerName: "dataReceived"
+                        Seconds: 300
+            OnInput:
+              Events:
+                - EventName: "timerReset"
+                  Condition: "true"
+                  Actions:
+                    - ResetTimer:
+                        TimerName: "dataReceived"
+                - EventName: "temperatureError"
+                  Condition: !Join [" || ", [!Join [".", ["$input", {'Ref': IoTRmSolInput}, "temperature > 225"]], !Join [".", ["$input", {'Ref': IoTRmSolInput}, "temperature < 190"]]]]
+                  Actions:
+                    - SetVariable:
+                        VariableName: "temperatureErrorCount"
+                        Value: "$variable.temperatureErrorCount + 1"
+                - EventName: "temperatureGood"
+                  Condition: !Join [" && ", [!Join [".", ["$input", {'Ref': IoTRmSolInput}, "temperature >= 190"]], !Join [".", ["$input", {'Ref': IoTRmSolInput}, "temperature <= 225"]]]]
+                  Actions:
+                    - SetVariable:
+                        VariableName: "temperatureErrorCount"
+                        Value: "0"
+                - EventName: "pressureError"
+                  Condition: !Join [" || ", [!Join [".", ["$input", {'Ref': IoTRmSolInput}, "pressure > 85"]], !Join [".", ["$input", {'Ref': IoTRmSolInput}, "pressure < 15"]]]]
+                  Actions:
+                    - SetVariable:
+                        VariableName: "pressureErrorCount"
+                        Value: "$variable.pressureErrorCount + 1"
+                - EventName: "pressureGood"
+                  Condition: !Join [" && ", [!Join [".", ["$input", {'Ref': IoTRmSolInput}, "pressure >= 15"]], !Join [".", ["$input", {'Ref': IoTRmSolInput}, "pressure <= 85"]]]]
+                  Actions:
+                    - SetVariable:
+                        VariableName: "pressureErrorCount"
+                        Value: "0"
+                - EventName: "oilLevelError"
+                  Condition: !Join [".", ["$input", {'Ref': IoTRmSolInput}, "oilLevel < 10"]]
+                  Actions:
+                    - SetVariable:
+                        VariableName: "oilLevelErrorCount"
+                        Value: "$variable.oilLevelErrorCount + 1"
+                - EventName: "oilLevelGood"
+                  Condition: !Join [".", ["$input", {'Ref': IoTRmSolInput}, "oilLevel >= 10"]]
+                  Actions:
+                    - SetVariable:
+                        VariableName: "oilLevelErrorCount"
+                        Value: "0"
+              TransitionEvents:
+                - EventName: "ErrorTransition"
+                  Condition: "$variable.temperatureErrorCount > 4 || $variable.pressureErrorCount > 4 || $variable.oilLevelErrorCount > 4 || timeout('dataReceived')"
+                  NextState: "ErrorState"
+
+          - StateName: "ErrorState"
+            OnEnter:
+              Events:
+                - EventName: "sendSNSonNoDataError"
+                  Condition: "timeout('dataReceived')"
+                  Actions:
+                    - SetVariable:
+                        VariableName: "temperatureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "pressureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "oilLevelErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "deviceId"
+                        Value: !Join [".", ["$input", {'Ref': IoTRmSolInput}, "deviceId" ] ]
+                    - Sns:
+                        TargetArn: !Ref IoTRmSolSNSTopic
+                        Payload:
+                          Type: STRING
+                          ContentExpression: "'Data not received for set duration for device ${$variable.deviceId}'"
+                    - SetTimer:
+                        TimerName: "snsSent"
+                        Seconds: 300
+                    - ClearTimer:
+                        TimerName: "dataReceived"
+                - EventName: "sendSNSonTemperatueError"
+                  Condition: "$variable.temperatureErrorCount > 4"
+                  Actions:
+                    - SetVariable:
+                        VariableName: "temperatureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "pressureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "oilLevelErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "deviceId"
+                        Value: !Join [".", ["$input", {'Ref': IoTRmSolInput}, "deviceId" ] ]
+                    - Sns:
+                        TargetArn: !Ref IoTRmSolSNSTopic
+                        Payload:
+                          Type: STRING
+                          ContentExpression: "'Consecutive temperature values exceeded threshold for device ${$variable.deviceId}'"
+                    - SetTimer:
+                        TimerName: "snsSent"
+                        Seconds: 300
+                    - ClearTimer:
+                        TimerName: "dataReceived"
+                - EventName: "sendSNSonPressureError"
+                  Condition: "$variable.pressureErrorCount > 4"
+                  Actions:
+                    - SetVariable:
+                        VariableName: "temperatureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "pressureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "oilLevelErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "deviceId"
+                        Value: !Join [".", ["$input", {'Ref': IoTRmSolInput}, "deviceId" ] ]
+                    - Sns:
+                        TargetArn: !Ref IoTRmSolSNSTopic
+                        Payload:
+                          Type: STRING
+                          ContentExpression: "'Consecutive pressure values exceeded threshold for device ${$variable.deviceId}'"
+                    - SetTimer:
+                        TimerName: "snsSent"
+                        Seconds: 300
+                    - ClearTimer:
+                        TimerName: "dataReceived"
+                - EventName: "sendSNSonOilLevelError"
+                  Condition: "$variable.oilLevelErrorCount > 4"
+                  Actions:
+                    - SetVariable:
+                        VariableName: "temperatureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "pressureErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "oilLevelErrorCount"
+                        Value: "0"
+                    - SetVariable:
+                        VariableName: "deviceId"
+                        Value: !Join [".", ["$input", {'Ref': IoTRmSolInput}, "deviceId" ] ]
+                    - Sns:
+                        TargetArn: !Ref IoTRmSolSNSTopic
+                        Payload:
+                          Type: STRING
+                          ContentExpression: "'Consecutive oilLevel values exceeded threshold for device ${$variable.deviceId}'"
+                    - SetTimer:
+                        TimerName: "snsSent"
+                        Seconds: 300
+                    - ClearTimer:
+                        TimerName: "dataReceived"
+            OnInput:
+              TransitionEvents:
+                - EventName: "NormalTransition"
+                  Condition: "timeout('snsSent')"
+                  NextState: "NormalState"
+                  Actions:
+                    - ClearTimer:
+                        TimerName: "snsSent"
+
+  IotRmDeviceEngineTaskExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ecs-tasks.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+
+  IotRmDeviceEngineTaskRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ecs-tasks.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+
+  IotRmDevicesEngineTaskPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W13
+            reason: "Policy has been scoped down"
+    Properties:
+      Description: "IoT Remote Monitoring Devices Simulator engine policy to allow ECS tasks to call AWS services on your behalf."
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "iot:publish"
+              - "iot:describeEndpoint"
+            Resource:
+              - "*"
+          - Effect: "Allow"
+            Action:
+              - "dynamodb:PutItem"
+              - "dynamodb:UpdateItem"
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${IotRmDeviceEngineStateStore}
+      Roles:
+        - Ref: "IotRmDeviceEngineTaskRole"
+
+    # Permissions & Policies [end]
+
+    # Rm Device Engine - ECS [start]
+
+  IotRmDeviceEngineCluster:
+    Type: "AWS::ECS::Cluster"
+    Properties:
+      ClusterName: "iot-rm-devices"
+      ClusterSettings: 
+        - Name: containerInsights
+          Value: enabled
+
+  IotRmDeviceEngineTaskDefinition:
+    Type: "AWS::ECS::TaskDefinition"
+    Properties:
+      ExecutionRoleArn: !GetAtt IotRmDeviceEngineTaskExecutionRole.Arn
+      Family: "iot-rm-devices-engine-task"
+      RequiresCompatibilities:
+        - "FARGATE"
+      Memory: "1024"
+      Cpu: "512"
+      NetworkMode: "awsvpc"
+      TaskRoleArn: !GetAtt IotRmDeviceEngineTaskRole.Arn
+      ContainerDefinitions:
+        - LogConfiguration:
+            LogDriver: "awslogs"
+            Options:
+              awslogs-group: !Ref IotDeviceSimEngineLogs
+              awslogs-region:
+                Fn::Sub: "${AWS::Region}"
+              awslogs-stream-prefix: "ecs"
+          Cpu: 512
+          Image: PUBLIC_ECR_REGISTRY/remote-monitoring-of-iot-devices:PUBLIC_ECR_TAG
+          Name: "iot-rm-devices-engine-container"
+          Essential: True
+
+  IotRmDeviceEngineServiceDefinition:
+    Type: "AWS::ECS::Service"
+    DependsOn: IotRmDeviceEngineStateStore
+    Properties:
+      ServiceName: "iot-rm-devices-engine-service"
+      TaskDefinition: !Ref IotRmDeviceEngineTaskDefinition
+      Cluster: !GetAtt IotRmDeviceEngineCluster.Arn
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+      DesiredCount: !Ref NumberOfDevices
+      LaunchType: "FARGATE"
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: "ENABLED"
+          SecurityGroups:
+            - !Ref IotRmDeviceEngineIntraVPCSecurityGroup
+          Subnets:
+            - !Ref IoTRmDeviceEnginePrivateSubnet1A
+            - !Ref IoTRmDeviceEnginePrivateSubnet1B
+
+  # Simulation Engine - ECS [end]
+
+  # Device State Store - DynamoDB [start]
+  IotRmDeviceEngineStateStore:
+    Type: AWS::DynamoDB::Table
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "naming reviewed" 
+          - id: W78
+            reason: "Backup not required"               
+    Properties:
+      TableName: "iot-rm-devices-table"
+      BillingMode: "PAY_PER_REQUEST"
+      AttributeDefinitions:
+      - AttributeName: "deviceId"
+        AttributeType: "N"
+      KeySchema:
+      - AttributeName: "deviceId"
+        KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: "ttlDevice"
+        Enabled: "TRUE"
+      SSESpecification:
+        SSEEnabled: true        
+
+  # Device State Store - DynamoDB [end]
+
+  # Logs [start]
+
+  IotDeviceSimEngineLogs:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "Logs are in customer account"    
+    Properties:
+      RetentionInDays: 30
+
+  # Logs [end]
+
+  # VPC [start]
+
+  IoTRmDeviceEngineVPC:
+    Type: "AWS::EC2::VPC"
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W60
+            reason: "Run in customer account"
+    Properties:
+      CidrBlock: "10.0.0.0/16"
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: "Name"
+          Value: !Join ["-", [!Ref "AWS::StackName", "vpc"]]
+
+  # Public Subnets
+  IoTRmDeviceEnginePublicSubnet1A:
+    Type: "AWS::EC2::Subnet"
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W33
+            reason: "Public IP on launch is needed by the solution"
+    Properties:
+      MapPublicIpOnLaunch: true
+      CidrBlock: "10.0.0.0/24"
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-public-subnet-1a"
+      VpcId: !Ref IoTRmDeviceEngineVPC
+
+  IoTRmDeviceEnginePublicSubnet1B:
+    Type: "AWS::EC2::Subnet"
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W33
+            reason: "Public IP on launch is needed by the solution"
+    Properties:
+      MapPublicIpOnLaunch: true
+      CidrBlock: "10.0.1.0/24"
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-public-subnet-1b"
+      VpcId: !Ref IoTRmDeviceEngineVPC
+
+  # Private Subnets
+  IoTRmDeviceEnginePrivateSubnet1A:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      CidrBlock: "10.0.2.0/24"
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-private-subnet-1a"
+      VpcId: !Ref IoTRmDeviceEngineVPC
+
+  IoTRmDeviceEnginePrivateSubnet1B:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      CidrBlock: "10.0.3.0/24"
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-private-subnet-1b"
+      VpcId: !Ref IoTRmDeviceEngineVPC
+
+  IoTRmDeviceEngineInternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-internet-gateway"
+
+  IoTRmDeviceEngineGatewayAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      InternetGatewayId: !Ref IoTRmDeviceEngineInternetGateway
+      VpcId: !Ref IoTRmDeviceEngineVPC
+
+  # Route Tables
+  IoTRmDeviceEnginePublicSubnetRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref IoTRmDeviceEngineVPC
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-public-route-table"
+
+  IoTRmDeviceEnginePublicSubnetRoute:
+    Type: "AWS::EC2::Route"
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref IoTRmDeviceEngineInternetGateway
+      RouteTableId: !Ref IoTRmDeviceEnginePublicSubnetRouteTable
+    DependsOn: IoTRmDeviceEngineGatewayAttachment
+
+  IoTRmDeviceEngineSubnet1ARouteAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref IoTRmDeviceEnginePublicSubnetRouteTable
+      SubnetId: !Ref IoTRmDeviceEnginePublicSubnet1A
+
+  IoTRmDeviceEngineSubnet1BRouteAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref IoTRmDeviceEnginePublicSubnetRouteTable
+      SubnetId: !Ref IoTRmDeviceEnginePublicSubnet1B
+
+  IoTRmDeviceEngineElasticIP1A:
+    Type: "AWS::EC2::EIP"
+    DependsOn: IoTRmDeviceEngineInternetGateway
+    Properties:
+      Domain: vpc
+
+  IoTRmDeviceEngineNATGateway1A:
+    Type: "AWS::EC2::NatGateway"
+    DependsOn: IoTRmDeviceEngineElasticIP1A
+    Properties:
+      AllocationId: !GetAtt IoTRmDeviceEngineElasticIP1A.AllocationId
+      SubnetId: !Ref IoTRmDeviceEnginePublicSubnet1A
+
+  IoTRmDeviceEnginePrivateSubnetRouteTable1A:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref IoTRmDeviceEngineVPC
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-private-route-table-1a"
+
+  IoTRmDeviceEnginePrivateSubnetRoute1A:
+    Type: "AWS::EC2::Route"
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref IoTRmDeviceEngineNATGateway1A
+      RouteTableId: !Ref IoTRmDeviceEnginePrivateSubnetRouteTable1A
+    DependsOn:
+      - IoTRmDeviceEngineNATGateway1A
+      - IoTRmDeviceEnginePrivateSubnetRouteTable1A
+
+  IoTRmDeviceEngineElasticIP1B:
+    Type: "AWS::EC2::EIP"
+    DependsOn: IoTRmDeviceEngineInternetGateway
+    Properties:
+      Domain: vpc
+
+  IoTRmDeviceEngineNATGateway1B:
+    Type: "AWS::EC2::NatGateway"
+    DependsOn: IoTRmDeviceEngineElasticIP1B
+    Properties:
+      AllocationId: !GetAtt IoTRmDeviceEngineElasticIP1B.AllocationId
+      SubnetId: !Ref IoTRmDeviceEnginePublicSubnet1B
+
+  IoTRmDeviceEnginePrivateSubnetRouteTable1B:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref IoTRmDeviceEngineVPC
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-private-route-table-1b"
+
+  IoTRmDeviceEnginePrivateSubnetRoute1B:
+    Type: "AWS::EC2::Route"
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref IoTRmDeviceEngineNATGateway1B
+      RouteTableId: !Ref IoTRmDeviceEnginePrivateSubnetRouteTable1B
+    DependsOn:
+      - IoTRmDeviceEngineNATGateway1B
+      - IoTRmDeviceEnginePrivateSubnetRouteTable1B
+
+  IoTRmDeviceEnginePrivSubnet1ARouteAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref IoTRmDeviceEnginePrivateSubnetRouteTable1A
+      SubnetId: !Ref IoTRmDeviceEnginePrivateSubnet1A
+
+  IoTRmDeviceEnginePrivSubnet1BRouteAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref IoTRmDeviceEnginePrivateSubnetRouteTable1B
+      SubnetId: !Ref IoTRmDeviceEnginePrivateSubnet1B
+
+  # Security Group
+  IotRmDeviceEngineIntraVPCSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupName: "Intra-VPC Security Group"
+      GroupDescription: "Security group that allows inbound from the VPC and outbound to the Internet"
+      Tags:
+        - Key: "Name"
+          Value: "iot-rm-devices-intra-vpc-sg"
+      VpcId: !Ref IoTRmDeviceEngineVPC
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F1000
+            reason: "Missing egress rule is desired to specifically allow all traffic outbound"
+          - id: W28
+            reason: "naming reviewed"
+          - id: W27
+            reason: "Port range needed"
+          - id: W42
+            reason: "all protocols allowed"
+
+  IotRmDeviceEngineIntraVPCSecurityGroupIngress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      FromPort: 0
+      ToPort: 65535
+      GroupId: !Ref IotRmDeviceEngineIntraVPCSecurityGroup
+      Description: Iot Simulator Intra VPC Ingress Security Group
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref IotRmDeviceEngineIntraVPCSecurityGroup
+
+    # VPC [end]
