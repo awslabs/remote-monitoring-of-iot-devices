@@ -84,7 +84,7 @@ export DIST_OUTPUT_BUCKET=my-bucket-name # bucket where customized code will res
 export SOLUTION_NAME=my-solution-name
 export VERSION=my-version # version number for the customized code
 ```
--   When creating and using buckets it is recommeded to:
+-   When creating and using buckets it is recommended to:
 
     -   Use randomized names or uuid as part of your bucket naming strategy.
     -   Ensure buckets are not public.
@@ -101,14 +101,14 @@ chmod +x ./build-s3-dist.sh
 
 * Deploy the distributable to an Amazon S3 bucket in your account. _Note:_ you must have the AWS Command Line Interface installed.
 ```
-aws s3 cp global-s3-assets/ s3://my-bucket-name-<aws_region>/$SOLUTION_NAME/$VERSION/ --recursive --acl bucket-owner-full-control --profile aws-cred-profile-name
+aws s3 cp global-s3-assets/ s3://$DIST_OUTPUT_BUCKET/$SOLUTION_NAME/$VERSION/ --recursive
 ```
 
 * Get the link of the solution template uploaded to your Amazon S3 bucket.
 * Deploy the solution to your account by launching a new AWS CloudFormation stack using the link of the solution template in Amazon S3.
 
 ### Building the simulation engine Docker container for customization
-The simulation engine is a Docker container that is powered by AWS Fargate. Amazon ECS containers provisioned by [AWS Fargate](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html) contain the simulation engine that periodically polls a simulation queue for simulation requests. The simulation engine provides the logic for managing virtual devices and generating the simulated data to send to the target AWS IoT endpoint. After making your customizations to the simulation engine, you will need build a new Docker image.
+The simulation engine is a Docker container that is powered by AWS Fargate. Amazon ECS containers provisioned by [AWS Fargate](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html) contain the simulation engine that periodically polls a simulation queue for simulation requests. The simulation engine provides the logic for managing virtual devices and generating the simulated data to send to the target AWS IoT endpoint. After making your customization to the simulation engine, you will need build a new Docker image.
 
 ```
 cd ecr/remote-monitoring-of-iot-devices

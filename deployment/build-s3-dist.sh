@@ -16,6 +16,10 @@
 #
 #  - version-code: version of the package
 
+PUBLIC_ECR_REGISTRY=public.ecr.aws/aws-solutions
+PUBLIC_ECR_TAG=v1.0.0
+
+
 # Check to see if input has been provided:
 if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
     echo "Please provide the base source bucket name, trademark approved solution name and version where the lambda code will eventually reside."
